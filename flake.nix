@@ -9,6 +9,7 @@
         packages = with pkgs; [
           cargo
           rustc
+          clippy
         ];
       };
     });
