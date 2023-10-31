@@ -1,8 +1,12 @@
 extern crate inotify;
 
 
+
 // use std::path::PathBuf;
-use std::ffi::OsStr;
+use std::ffi::{
+    OsStr,
+    OsString,
+};
 
 use inotify::{
     Event,
@@ -27,36 +31,68 @@ use inotify::{
 // File MOVED_FROM: Some("archlinux-2023.q_Yw9-ln.10.14-x86_64.iso.sig.part")
 // File MOVED_TO: Some("archlinux-2023.10.14-x86_64.iso.sig")
 
-type EmptyFileName = OsStr;
-type PartFileName = OsStr;
+// Download cancelled: DownloadStarted and empty file deleted
+// Download completed: DownloadStarted and moved to empty file
+
+type EmptyFileName = OsString;
+type PartFileName = OsString;
 
 #[derive(Debug)]
 pub enum State {
-    Wating,
+    Waiting,
     FirstPartCreated(Box<PartFileName>),
     EmptyFileCreated(Box<EmptyFileName>, Box<PartFileName>),
-    FirstPartMoved(Box<EmptyFileName>, Box<PartFileName>),
     DownloadStarted(Box<EmptyFileName>)
 }
 
 impl State {
-    
-    pub fn process_event(self, event: &Event<&OsStr>) -> State {
-        let name = match event.name {
-            Some(n) => n.to_str().expect("Failed to convert OsString {n}"),
-            _ => { return self; }
-        };
-        
-        println!("{0:#?}: {name}", event.mask);
 
+    pub fn process_event(self, event: &Event<&OsStr>) -> Option<State> {
 
+        // Ignore events concerning directories
         if event.mask.contains(EventMask::ISDIR) {
-            return self;
+            // println!("Ignored directory event!");
+            return Some(State::Waiting)
         }
 
+        let file_name = event.name?.to_os_string();
 
-        return self;
+        let download_dir: std::path::PathBuf = std::env::var("XDG_DOWNLOAD_DIR")
+            .expect("Please set $XDG_DOWNLOAD_DIR")
+            .into();
+
+        let path = download_dir.join(file_name.clone());
+        let extension = path.extension();
+
+        // println!("{0:#?}: {file_name:#?}", event.mask);
+
+        let new_state =  match self {
+            State::Waiting => {
+                if event.mask.contains(EventMask::CREATE) && extension == Some(OsStr::new("part")) {
+                    State::FirstPartCreated(Box::new(file_name))
+                } else {
+                    State::Waiting
+                }
+            },
+            State::FirstPartCreated(part_file_name) => {
+                if event.mask.contains(EventMask::CREATE) && path.metadata().ok()?.len() == 0 {
+                    State::EmptyFileCreated(Box::new(file_name), part_file_name)
+                } else {
+                    State::Waiting
+                }
+            },
+            State::EmptyFileCreated(empty_file_name, part_file_name) => {
+                if event.mask.contains(EventMask::MOVED_FROM) && file_name == *part_file_name {
+                    State::DownloadStarted(empty_file_name)
+                } else {
+                    State::Waiting
+                }
+            }
+            _ => State::Waiting
+        };
+
+        Some(new_state)
+
     }
 
 }
-

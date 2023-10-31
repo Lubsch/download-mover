@@ -1,42 +1,59 @@
 extern crate inotify;
 
+use clap::Parser;
+
 mod state;
 use state::State;
 
+use std::path::PathBuf;
+use std::ffi::OsStr;
+
+use std::env;
 
 use inotify::{
     WatchMask,
     Inotify,
 };
 
-fn main() -> ! {
+#[derive(Parser, Debug)]
+struct Args {
+    // Script to execute
+    #[arg(long)]
+    script: PathBuf,
+
+    // Terminal app to execute
+    #[arg(long)]
+    terminal: PathBuf,
+
+    // Additional arguments to terminal
+    #[arg(long, require_equals=true)]
+    terminal_arg: Option<PathBuf>,
+}
+
+fn main() -> Result<(), std::io::Error> {
+    let args = Args::parse();
+
     let mut inotify = Inotify::init()
         .expect("Failed to initialize inotify");
 
-    let current_dir : std::path::PathBuf = std::env::current_dir()
-        .expect("Failed to determine current directory");
-    println!("Current dir: {0}", current_dir.display());
-
-    let basename : &str = current_dir.file_name()
-        .expect("Couldn't get filename")
-        .to_str()
-        .expect("Couldn't convert to String");
-    println!("Basename: {basename}");
+    let download_dir: PathBuf = env::var("XDG_DOWNLOAD_DIR")
+        .expect("Please set $XDG_DOWNLOAD_DIR")
+        .into();
 
     inotify
         .watches()
         .add(
-            current_dir,
-            WatchMask::MOVE | WatchMask::CREATE | WatchMask::DELETE,
+            download_dir.clone(),
+            WatchMask::MOVED_FROM | WatchMask::CREATE | WatchMask::DELETE,
         )
         .expect("Failed to add inotify watch");
 
-    println!("Watching current directory for activity...");
+    println!("Watching {0:#?} for activity...", download_dir);
 
-    let mut state = State::Wating;
-
-    // Buffer to read 
+    // Buffer to read events
     let mut buffer = [0u8; 4096];
+
+    let mut state = State::Waiting;
 
     loop {
         let events = inotify
@@ -44,8 +61,30 @@ fn main() -> ! {
             .expect("Failed to read inotify events");
 
         for event in events {
-            state = state.process_event(&event);
-            println!("State: {state:?}");
+            state = state.process_event(&event).unwrap_or_else(|| {
+                println!("Failed to process event: {event:#?}");
+                State::Waiting
+            });
+            // println!("State: {state:?}");
+
+            if let State::DownloadStarted(file_name) = state {
+                select_path_dialog(&file_name, &args.script, &args.terminal, &args.terminal_arg);
+                state = State::Waiting;
+            }
         }
     }
+}
+
+fn select_path_dialog(file_name: &OsStr, script: &PathBuf, terminal: &PathBuf, terminal_arg: &Option<PathBuf>) {
+    let mut command = std::process::Command::new(terminal);
+    if let Some(arg) = terminal_arg {
+        command.arg(arg);
+    }
+    let output = command
+        .arg(script)
+        .arg(file_name)
+        .output()
+        .expect("Failed to get script output");
+
+    println!("{output:#?}");
 }
