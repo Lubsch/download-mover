@@ -1,19 +1,17 @@
-extern crate inotify;
-
 use clap::Parser;
-
-mod state;
-use state::State;
 
 use std::path::PathBuf;
 use std::ffi::OsStr;
 
-use std::env;
-
-use inotify::{
-    WatchMask,
+use nix::sys::inotify::{
     Inotify,
+    InitFlags,
+    AddWatchFlags
 };
+
+mod state;
+use state::State;
+
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -33,32 +31,23 @@ struct Args {
 fn main() -> Result<(), std::io::Error> {
     let args = Args::parse();
 
-    let mut inotify = Inotify::init()
-        .expect("Failed to initialize inotify");
-
-    let download_dir: PathBuf = env::var("XDG_DOWNLOAD_DIR")
+    let instance = Inotify::init(InitFlags::empty())?;
+    
+    let download_dir: PathBuf = std::env::var("XDG_DOWNLOAD_DIR")
         .expect("Please set $XDG_DOWNLOAD_DIR")
         .into();
 
-    inotify
-        .watches()
-        .add(
-            download_dir.clone(),
-            WatchMask::MOVED_FROM | WatchMask::CREATE | WatchMask::DELETE,
-        )
-        .expect("Failed to add inotify watch");
+    instance.add_watch(
+       &download_dir,
+       AddWatchFlags::IN_CREATE | AddWatchFlags::IN_DELETE | AddWatchFlags::IN_MOVED_FROM
+    )?;
 
     println!("Watching {0:#?} for activity...", download_dir);
-
-    // Buffer to read events
-    let mut buffer = [0u8; 4096];
 
     let mut state = State::Waiting;
 
     loop {
-        let events = inotify
-            .read_events_blocking(&mut buffer)
-            .expect("Failed to read inotify events");
+        let events = instance.read_events()?;
 
         for event in events {
             state = state.process_event(&event).unwrap_or_else(|| {

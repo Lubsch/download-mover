@@ -1,16 +1,12 @@
-extern crate inotify;
-
-
-
 // use std::path::PathBuf;
 use std::ffi::{
     OsStr,
     OsString,
 };
 
-use inotify::{
-    Event,
-    EventMask,
+use nix::sys::inotify::{
+    InotifyEvent,
+    AddWatchFlags
 };
 
 // FILE DOWNLOAD LOG (Cancelled)
@@ -47,15 +43,15 @@ pub enum State {
 
 impl State {
 
-    pub fn process_event(self, event: &Event<&OsStr>) -> Option<State> {
+    pub fn process_event(self, event: &InotifyEvent) -> Option<State> {
 
         // Ignore events concerning directories
-        if event.mask.contains(EventMask::ISDIR) {
+        if event.mask.contains(AddWatchFlags::IN_ISDIR) {
             // println!("Ignored directory event!");
             return Some(State::Waiting)
         }
 
-        let file_name = event.name?.to_os_string();
+        let file_name = event.name.clone()?;
 
         let download_dir: std::path::PathBuf = std::env::var("XDG_DOWNLOAD_DIR")
             .expect("Please set $XDG_DOWNLOAD_DIR")
@@ -68,21 +64,21 @@ impl State {
 
         let new_state =  match self {
             State::Waiting => {
-                if event.mask.contains(EventMask::CREATE) && extension == Some(OsStr::new("part")) {
+                if event.mask.contains(AddWatchFlags::IN_CREATE) && extension == Some(OsStr::new("part")) {
                     State::FirstPartCreated(Box::new(file_name))
                 } else {
                     State::Waiting
                 }
             },
             State::FirstPartCreated(part_file_name) => {
-                if event.mask.contains(EventMask::CREATE) && path.metadata().ok()?.len() == 0 {
+                if event.mask.contains(AddWatchFlags::IN_CREATE) && path.metadata().ok()?.len() == 0 {
                     State::EmptyFileCreated(Box::new(file_name), part_file_name)
                 } else {
                     State::Waiting
                 }
             },
             State::EmptyFileCreated(empty_file_name, part_file_name) => {
-                if event.mask.contains(EventMask::MOVED_FROM) && file_name == *part_file_name {
+                if event.mask.contains(AddWatchFlags::IN_MOVED_FROM) && file_name == *part_file_name {
                     State::DownloadStarted(empty_file_name)
                 } else {
                     State::Waiting
