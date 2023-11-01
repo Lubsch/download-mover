@@ -1,5 +1,6 @@
 use clap::Parser;
 
+use std::path;
 use std::path::PathBuf;
 use std::ffi::OsStr;
 
@@ -8,6 +9,7 @@ use nix::sys::inotify::{
     InitFlags,
     AddWatchFlags
 };
+use nix::sys::stat::Mode;
 
 mod state;
 use state::State;
@@ -57,23 +59,44 @@ fn main() -> Result<(), std::io::Error> {
             // println!("State: {state:?}");
 
             if let State::DownloadStarted(file_name) = state {
-                select_path_dialog(&file_name, &args.script, &args.terminal, &args.terminal_arg);
+                let path = select_path_dialog(&file_name, &args.script, &args.terminal, &args.terminal_arg)?;
+                println!("{path:#?}");
                 state = State::Waiting;
             }
         }
     }
 }
 
-fn select_path_dialog(file_name: &OsStr, script: &PathBuf, terminal: &PathBuf, terminal_arg: &Option<PathBuf>) {
+fn select_path_dialog(
+    file_name: &OsStr,
+    script: &PathBuf,
+    terminal: &PathBuf,
+    terminal_arg: &Option<PathBuf>
+) -> Result<PathBuf, std::io::Error> {
+    let tmp_dir = tempfile::tempdir()?;
+    let tmp_path = tmp_dir.path().join("path");
+    nix::unistd::mkfifo(&tmp_path, Mode::S_IRWXU)?;
+    println!("{tmp_path:?}");
+
     let mut command = std::process::Command::new(terminal);
     if let Some(arg) = terminal_arg {
         command.arg(arg);
     }
-    let output = command
-        .arg(script)
-        .arg(file_name)
-        .output()
-        .expect("Failed to get script output");
+    command
+        .arg(&script)
+        .arg(&file_name)
+        .arg(&tmp_path)
+        .output()?;
 
-    println!("{output:#?}");
+    Ok(PathBuf::from(std::fs::read_to_string(tmp_path)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_select_path_dialog() {
+        let output = select_path_dialog(&OsStr::new("test.txt"), &PathBuf::from("../script"), &PathBuf::from("footclient"), &Some(PathBuf::from("--app-id=float")));
+        println!("{output:?}");
+    }
 }
