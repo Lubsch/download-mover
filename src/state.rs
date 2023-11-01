@@ -43,15 +43,16 @@ pub enum State {
 
 impl State {
 
-    pub fn process_event(self, event: &InotifyEvent) -> Option<State> {
+    pub fn process_event(self, event: &InotifyEvent) -> State {
 
         // Ignore events concerning directories
         if event.mask.contains(AddWatchFlags::IN_ISDIR) {
-            // println!("Ignored directory event!");
-            return Some(State::Waiting)
+            return State::Waiting;
         }
 
-        let file_name = event.name.clone()?;
+        let Some(file_name) = event.name.clone() else {
+            return State::Waiting;
+        };
 
         let download_dir: std::path::PathBuf = std::env::var("XDG_DOWNLOAD_DIR")
             .expect("Please set $XDG_DOWNLOAD_DIR")
@@ -62,7 +63,7 @@ impl State {
 
         // println!("{0:#?}: {file_name:#?}", event.mask);
 
-        let new_state =  match self {
+        match self {
             State::Waiting => {
                 if event.mask.contains(AddWatchFlags::IN_CREATE) && extension == Some(OsStr::new("part")) {
                     State::FirstPartCreated(Box::new(file_name))
@@ -71,7 +72,8 @@ impl State {
                 }
             },
             State::FirstPartCreated(part_file_name) => {
-                if event.mask.contains(AddWatchFlags::IN_CREATE) && path.metadata().ok()?.len() == 0 {
+                let Ok(metadata) = path.metadata();
+                if event.mask.contains(AddWatchFlags::IN_CREATE) && metadata.len() == 0 {
                     State::EmptyFileCreated(Box::new(file_name), part_file_name)
                 } else {
                     State::Waiting
@@ -84,10 +86,8 @@ impl State {
                     State::Waiting
                 }
             }
-            _ => State::Waiting
-        };
-
-        Some(new_state)
+            State::DownloadStarted(_) => State::Waiting
+        }
 
     }
 

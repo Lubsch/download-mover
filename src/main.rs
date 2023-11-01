@@ -1,21 +1,20 @@
 use clap::Parser;
 
-use std::path;
 use std::path::PathBuf;
 use std::ffi::OsStr;
 
+use nix::sys::stat::Mode;
 use nix::sys::inotify::{
     Inotify,
     InitFlags,
     AddWatchFlags
 };
-use nix::sys::stat::Mode;
 
 mod state;
 use state::State;
 
 
-#[derive(Parser, Debug)]
+#[derive(clap::Parser, Debug)]
 struct Args {
     // Script to execute
     #[arg(long)]
@@ -94,9 +93,16 @@ fn select_path_dialog(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn test_select_path_dialog() {
-        let output = select_path_dialog(&OsStr::new("test.txt"), &PathBuf::from("../script"), &PathBuf::from("footclient"), &Some(PathBuf::from("--app-id=float")));
+        let output = select_path_dialog(
+            &OsStr::new("test.txt"),
+            &PathBuf::from("../script"),
+            &PathBuf::from("footclient"),
+            &Some(PathBuf::from("--app-id=float"))
+        );
         println!("{output:?}");
     }
+
 }
