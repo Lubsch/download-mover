@@ -1,4 +1,3 @@
-// use std::path::PathBuf;
 use std::ffi::{
     OsStr,
     OsString,
@@ -31,27 +30,37 @@ use nix::sys::inotify::{
 // Download completed: DownloadStarted and moved to empty file
 
 type EmptyFileName = OsString;
-type PartFileName = OsString;
+type PartFile1Name = OsString;
+type PartFile2Name = OsString;
+type FullFileName = OsString;
 
 #[derive(Debug)]
-pub enum State {
-    Waiting,
-    FirstPartCreated(Box<PartFileName>),
-    EmptyFileCreated(Box<EmptyFileName>, Box<PartFileName>),
-    DownloadStarted(Box<EmptyFileName>)
+pub enum FileState {
+    FirstPartCreated(Box<PartFile1Name>),
+    EmptyFileCreated(Box<EmptyFileName>, Box<PartFile1Name>),
+    Started(Box<EmptyFileName>, Box<PartFile2Name>),
+    Finished(Box<FullFileName>)
 }
+
+pub struct FileInfo {
+    name: Box<OsStr>,
+    len: u64,
+    extension: Box<OsStr>
+}
+
+pub struct State(Vec<FileState>);
 
 impl State {
 
-    pub fn process_event(self, event: &InotifyEvent) -> State {
+    pub fn process_event(self, event: &InotifyEvent) -> Self {
 
-        // Ignore events concerning directories
+        // Ignore directory events
         if event.mask.contains(AddWatchFlags::IN_ISDIR) {
-            return State::Waiting;
+            return self;
         }
 
         let Some(file_name) = event.name.clone() else {
-            return State::Waiting;
+            return self;
         };
 
         let download_dir: std::path::PathBuf = std::env::var("XDG_DOWNLOAD_DIR")
@@ -61,11 +70,24 @@ impl State {
         let path = download_dir.join(file_name.clone());
         let extension = path.extension();
 
+        let mut result: State = State(vec!());
+        for file_state in self.0 {
+            result.0.push(file_state.process_event(&event, &file_name));
+        }
+        result
+    }
+
+}
+
+impl FileState {
+
+    fn process_event(self, event: &InotifyEvent, file_info: &FileInfo) -> Self {
+
         // println!("{0:#?}: {file_name:#?}", event.mask);
 
         match self {
             State::Waiting => {
-                if event.mask.contains(AddWatchFlags::IN_CREATE) && extension == Some(OsStr::new("part")) {
+                if event.mask.contains(AddWatchFlags::IN_CREATE) && file_info. == Some(OsStr::new("part")) {
                     State::FirstPartCreated(Box::new(file_name))
                 } else {
                     State::Waiting

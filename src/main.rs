@@ -51,10 +51,7 @@ fn main() -> Result<(), std::io::Error> {
         let events = instance.read_events()?;
 
         for event in events {
-            state = state.process_event(&event).unwrap_or_else(|| {
-                println!("Failed to process event: {event:#?}");
-                State::Waiting
-            });
+            state = state.process_event(&event);
             // println!("State: {state:?}");
 
             if let State::DownloadStarted(file_name) = state {
