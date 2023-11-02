@@ -1,17 +1,29 @@
 use clap::Parser;
 
-use std::path::PathBuf;
-use std::ffi::OsStr;
+use std::{
+    io::{
+        stdin,
+        BufRead,
+    },
+    ffi::{
+        OsString,
+        OsStr
+    },
+    collections::HashMap,
+    path::PathBuf,
+};
 
-use nix::sys::stat::Mode;
-use nix::sys::inotify::{
-    Inotify,
-    InitFlags,
-    AddWatchFlags
+use inotify::{
+    EventMask,
+    WatchMask,
+    Inotify
 };
 
 mod state;
-use state::State;
+use state::{
+    State,
+    Progress
+};
 
 
 #[derive(clap::Parser, Debug)]
@@ -26,65 +38,120 @@ struct Args {
 
     // Additional arguments to terminal
     #[arg(long, require_equals=true)]
-    terminal_arg: Option<PathBuf>,
+    terminal_arg: Option<OsString>,
 }
 
 fn main() -> Result<(), std::io::Error> {
     let args = Args::parse();
 
-    let instance = Inotify::init(InitFlags::empty())?;
+    let mut inotify = Inotify::init()?;
     
     let download_dir: PathBuf = std::env::var("XDG_DOWNLOAD_DIR")
         .expect("Please set $XDG_DOWNLOAD_DIR")
         .into();
 
-    instance.add_watch(
+    inotify.watches().add(
        &download_dir,
-       AddWatchFlags::IN_CREATE | AddWatchFlags::IN_DELETE | AddWatchFlags::IN_MOVED_FROM
+       WatchMask::CREATE | WatchMask::DELETE | WatchMask::MOVED_FROM
     )?;
 
     println!("Watching {0:#?} for activity...", download_dir);
 
     let mut state = State::Waiting;
+    let mut files: HashMap<OsString, Progress> = HashMap::new();
 
+    let mut buffer = [0u8; 4096];
     loop {
-        let events = instance.read_events()?;
+        let events = inotify.read_events_blocking(&mut buffer)?;
 
-        for event in events {
-            state = state.process_event(&event);
-            // println!("State: {state:?}");
+        'process_events: for event in events {
+            let Some(file_name) = event.name else {
+                continue 'process_events;
+            };
 
-            if let State::DownloadStarted(file_name) = state {
-                let path = select_path_dialog(&file_name, &args.script, &args.terminal, &args.terminal_arg)?;
-                println!("{path:#?}");
-                state = State::Waiting;
+            match state {
+
+                State::Waiting => {
+                    if event.mask.contains(EventMask::CREATE) {
+                        if let Some(extension) = download_dir.join(&file_name).extension() {
+                            if extension == "part" {
+                                state = State::FirstPartCreated{ part_name: file_name.into() };
+                            }
+                        }
+                        continue 'process_events;
+                    }
+                    if event.mask.contains(EventMask::MOVED_TO) {
+                        if let Some(progress) = files.remove(file_name.into()) {
+                            match progress {
+                                Progress::LoadingPathed(path) => {
+                                    mv_file(&file_name, &path);
+                                },
+                                Progress::Loading(process) => {
+                                    files.insert(file_name.into(), Progress::Finished(process));
+                                },
+                                Progress::Finished(..) => {
+                                    panic!("Download of {file_name:?} finished twice");
+                                }
+                            }
+                        }
+                    }
+                    if event.mask.contains(EventMask::DELETE) {
+                        files.remove(file_name.into());
+                    }
+                }
+
+                State::FirstPartCreated { part_name } => {
+                    if event.mask.contains(EventMask::CREATE) {
+                        if let Ok(metadata) = download_dir.join(&file_name).metadata() {
+                            if metadata.len() == 0 {
+                                state = State::EmptyFileCreated{
+                                    empty_name: file_name.into(),
+                                    part_name
+                                };
+                                continue 'process_events;
+                            }
+                        }
+                    }
+                    state = State::Waiting;
+                }
+
+                State::EmptyFileCreated { ref empty_name, ref part_name } => {
+                    if event.mask.contains(EventMask::MOVED_FROM) {
+                        if file_name == *part_name {
+                            files.insert(empty_name.clone(), Progress::Loading(
+                                select_path_dialog(&file_name, &args)?
+                            ));
+                            println!("Todo get path for {empty_name:?} from user");
+                            state = State::Waiting;
+                        }
+                    }
+                }
+
             }
         }
+
+        // Read selected paths from stdin
     }
+}
+
+fn mv_file(file_name: &OsStr, path: &PathBuf) {
+    println!("Would move {file_name:?} to {path:?}");
 }
 
 fn select_path_dialog(
     file_name: &OsStr,
-    script: &PathBuf,
-    terminal: &PathBuf,
-    terminal_arg: &Option<PathBuf>
-) -> Result<PathBuf, std::io::Error> {
-    let tmp_dir = tempfile::tempdir()?;
-    let tmp_path = tmp_dir.path().join("path");
-    nix::unistd::mkfifo(&tmp_path, Mode::S_IRWXU)?;
-    println!("{tmp_path:?}");
+    args: &Args
+) -> Result<std::process::Child, std::io::Error> {
 
-    let mut command = std::process::Command::new(terminal);
-    if let Some(arg) = terminal_arg {
+    let mut command = std::process::Command::new(&args.terminal);
+    if let Some(arg) = &args.terminal_arg {
         command.arg(arg);
     }
-    command
-        .arg(&script)
+   command
+        .arg(&args.script)
         .arg(&file_name)
-        .arg(&tmp_path)
-        .output()?;
-
-    Ok(PathBuf::from(std::fs::read_to_string(tmp_path)?))
+        .arg(std::process::id().to_string())
+        .spawn()
 }
 
 #[cfg(test)]
@@ -93,13 +160,21 @@ mod tests {
 
     #[test]
     fn test_select_path_dialog() {
-        let output = select_path_dialog(
-            &OsStr::new("test.txt"),
-            &PathBuf::from("../script"),
-            &PathBuf::from("footclient"),
-            &Some(PathBuf::from("--app-id=float"))
-        );
-        println!("{output:?}");
+        let mut child = select_path_dialog(
+            &OsString::from("test.txt"),
+            &Args{
+                script: PathBuf::from("../script"),
+                terminal: PathBuf::from("footclient"),
+                terminal_arg: Some(OsString::from("--app-id=float"))
+            }
+        ).unwrap();
+        'a: loop {
+            for line in stdin().lock().lines() {
+                println!("Read {0}", line.unwrap());
+                let _ = child.wait(); // Must "drop" it manually
+                break 'a;
+            }
+        }
     }
 
 }

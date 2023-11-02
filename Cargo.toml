@@ -7,5 +7,4 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.4.7", features = ["derive"] }
-nix = { version = "0.27.1", features = ["inotify", "fs"] }
-tempfile = "3.8.1"
+inotify = { version = "0.10.2", default-features = false }
