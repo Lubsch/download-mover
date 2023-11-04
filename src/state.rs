@@ -66,96 +66,74 @@ impl State {
         }
     }
     
-    pub fn process_event(mut self, event: &Event<&OsStr>, download_dir: &Path) -> Self {
-        let file_name = match event.name {
-            Some(name) => name.to_os_string(),
-            None => {
-                return self;
-            }
-        };
+    pub fn process_event(&mut self, event: &Event<&OsStr>, download_dir: &Path) {
+        let file_name = event.name
+            .expect("Couldn't get Event name")
+            .to_os_string();
+        let path = download_dir.join(&file_name);
 
-        match self.new_file {
+        match (&self.new_file, event.mask) {
 
-            NewFileState::Waiting => {
+            (NewFileState::Waiting, EventMask::CREATE) => match path.extension() {
+                Some(extension) if extension == "part" => {
+                    self.new_file = NewFileState::FirstPartCreated{ part_name: file_name }
+                },
+                Some(extension) if extension == "download-mover" => {
+                    let file_name = path.file_stem().expect("Couldn't get filename from tmp file");
+                    let mv_target = read_to_string(&path).expect("Couldn't read mv_target");
+                    std::fs::remove_file(&path).expect("Couldn't remove tmp file");
 
-                if event.mask.contains(EventMask::CREATE) {
-                    let path = download_dir.join(&file_name);
-                    let Some(extension) = path.extension() else {
-                        return self;
+                    let progress = self.files.remove(file_name).expect("Couldn't get progress from HashMap");
+                    match progress {
+                        Progress::Loading(mut child) => {
+                            child.wait().expect("Couldn't wait for path_selector.");
+                            self.files.insert(file_name.into(), Progress::LoadingPathed(mv_target.into()));
+                        },
+                        Progress::Finished(mut child) => {
+                            child.wait().expect("Couldn't wait for path_selector.");
+                            mv_file(file_name, &PathBuf::from(&mv_target), download_dir);
+                        },
+                        Progress::LoadingPathed(path) => {
+                            panic!("{file_name:?} got path twice! Old: {path:?}, New: {mv_target:?}")
+                        }
+                    }
+                },
+                _ => {}
+            },
+
+            (NewFileState::Waiting, EventMask::MOVED_TO) => match self.files.remove(&file_name) {
+                Some(Progress::LoadingPathed(path)) => mv_file(&file_name, &path, download_dir),
+                Some(Progress::Loading(process)) => {
+                    self.files.insert(file_name, Progress::Finished(process));
+                }
+                Some(Progress::Finished(..)) => panic!("Download of {file_name:?} finished twice"),
+                None => {}
+            },
+
+            (NewFileState::Waiting, EventMask::DELETE) => {
+                self.files.remove(&file_name);
+            },
+
+            (NewFileState::FirstPartCreated { part_name }, EventMask::CREATE) => match path.metadata() {
+                Ok(metadata) if metadata.len() == 0 => {
+                    self.new_file = NewFileState::EmptyFileCreated{
+                        empty_name: file_name,
+                        part_name: part_name.clone()
                     };
-                    if extension == "part" {
-                        self.new_file = NewFileState::FirstPartCreated{ part_name: file_name };
-                        return self;
-                    }
-                    if extension == "download-mover" {
-                        let file_name = path.file_stem().expect("Couldn't get filename from tmp_file");
-                        let mv_target = read_to_string(&path).expect("Couldn't read mv_target");
-                        std::fs::remove_file(&path).expect("Couldn't remove tmp file");
+                },
+                _ => self.new_file = NewFileState::Waiting
+            },
 
-                        let progress = self.files.remove(file_name).expect("Couldn't get progress from HashMap");
-                        match progress {
-                            Progress::Loading(mut child) => {
-                                child.wait().expect("Couldn't wait for child.");
-                                self.files.insert(file_name.into(), Progress::LoadingPathed(mv_target.into()));
-                            },
-                            Progress::Finished(mut child) => {
-                                child.wait().expect("Couldn't wait for child.");
-                                mv_file(file_name, &PathBuf::from(&mv_target), download_dir);
-                            },
-                            Progress::LoadingPathed(..) => {
-                                panic!("{file_name:?} got path twice!")
-                            }
-                        }
-                        return self;
-                    }
-                }
+            (NewFileState::EmptyFileCreated { empty_name, part_name }, EventMask::MOVED_FROM) => if file_name == *part_name {
+                let child = select_path_dialog(empty_name, download_dir);
+                self.files.insert(empty_name.clone(), Progress::Loading(child));
+            },
 
-                if event.mask.contains(EventMask::MOVED_TO) {
-                    match self.files.remove(&file_name) {
-                        Some(Progress::LoadingPathed(path)) => {
-                            mv_file(&file_name, &path, download_dir);
-                        },
-                        Some(Progress::Loading(process)) => {
-                            self.files.insert(file_name, Progress::Finished(process));
-                        },
-                        Some(Progress::Finished(..)) => {
-                            panic!("Download of {file_name:?} finished twice");
-                        }
-                        None => {}
-                    }
-                    return self;
-                }
-
-                if event.mask.contains(EventMask::DELETE) {
-                    self.files.remove(&file_name);
-                }
-                self
-            }
-
-            NewFileState::FirstPartCreated { part_name } => {
-                if event.mask.contains(EventMask::CREATE) {
-                    if let Ok(metadata) = download_dir.join(&file_name).metadata() {
-                        if metadata.len() == 0 {
-                            self.new_file = NewFileState::EmptyFileCreated{ 
-                                empty_name: file_name,
-                                part_name
-                            };
-                            return self;
-                        }
-                    }
-                }
+            (NewFileState::FirstPartCreated {..}, _) | (NewFileState::EmptyFileCreated {..}, _) => {
                 self.new_file = NewFileState::Waiting;
-                self
-            }
+            },
 
-            NewFileState::EmptyFileCreated { empty_name, part_name } => {
-                if event.mask.contains(EventMask::MOVED_FROM) && file_name == part_name {
-                    let child = select_path_dialog(&empty_name, download_dir);
-                    self.files.insert(empty_name, Progress::Loading(child));
-                }
-                self.new_file = NewFileState::Waiting;
-                self
-            }
+            (_, _) => {}
         }
     }
 
@@ -172,20 +150,18 @@ fn mv_file(file_name: &OsStr, path: &PathBuf, download_dir: &Path) {
         }
     }
 
-    if path.is_dir() {
-        mv(download_dir.join(file_name), &path.join(file_name));
-    } else {
-        match path.try_exists() {
-            Ok(true) => {
-                println!("{path:?} already exists.");
-            },
-            Err(error) => {
-                println!("We don't know if {path:?} exists: {error}");
-            }
-            _ => {
-                mv(download_dir.join(file_name), path);
-            }
-            
+    match (path.is_dir(), path.try_exists()) {
+        (true, _) => {
+            mv(download_dir.join(file_name), &path.join(file_name));
+        },
+        (false, Ok(false)) => {
+            mv(download_dir.join(file_name), path);
+        }
+        (false, Ok(true)) => {
+            println!("{path:?} already exists.");
+        },
+        (false, Err(error)) => {
+            println!("We don't know if {path:?} exists: {error}");
         }
     }
 }

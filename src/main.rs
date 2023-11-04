@@ -23,7 +23,7 @@ fn main() -> Result<(), std::io::Error> {
         let events = inotify.read_events_blocking(&mut buffer)?;
 
         for event in events {
-            state = state.process_event(&event, &download_dir);
+            state.process_event(&event, &download_dir);
         }
     }
 }
