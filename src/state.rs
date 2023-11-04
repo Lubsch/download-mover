@@ -125,7 +125,7 @@ impl State {
             },
 
             (NewFileState::EmptyFileCreated { empty_name, part_name }, EventMask::MOVED_FROM) => if file_name == *part_name {
-                let child = select_path_dialog(empty_name, download_dir);
+                let child = select_path_dialog(&download_dir.join(&empty_name));
                 self.files.insert(empty_name.clone(), Progress::Loading(child));
             },
 
@@ -166,14 +166,13 @@ fn mv_file(file_name: &OsStr, path: &PathBuf, download_dir: &Path) {
     }
 }
 
-fn select_path_dialog(file_name: &OsStr, download_dir: &Path) -> Child {
+fn select_path_dialog(file_path: &Path) -> Child {
     // Skip first arg and use rest as command to execute
     let mut args = std::env::args();
     args.next();
     Command::new::<String>(args.next().expect("Too few arguments!"))
         .args(args.collect::<Vec<String>>())
-        .arg(file_name)
-        .arg(download_dir)
+        .arg(file_path)
         .spawn()
         .expect("Couldn't spawn child for {file_name:?}")
 }

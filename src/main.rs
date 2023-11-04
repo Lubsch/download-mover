@@ -20,9 +20,7 @@ fn main() -> Result<(), std::io::Error> {
     let mut buffer = [0u8; 4096];
 
     loop {
-        let events = inotify.read_events_blocking(&mut buffer)?;
-
-        for event in events {
+        for event in inotify.read_events_blocking(&mut buffer)? {
             state.process_event(&event, &download_dir);
         }
     }
