@@ -76,7 +76,7 @@ impl State {
 
             (NewFileState::Waiting, EventMask::CREATE) => match path.extension() {
                 Some(extension) if extension == "part" => {
-                    self.new_file = NewFileState::FirstPartCreated{ part_name: file_name }
+                    self.new_file = NewFileState::FirstPartCreated{ part_name: file_name };
                 },
                 Some(extension) if extension == "download-mover" => {
                     let file_name = path.file_stem().expect("Couldn't get filename from tmp file");
@@ -101,13 +101,17 @@ impl State {
                 _ => {}
             },
 
-            (NewFileState::Waiting, EventMask::MOVED_TO) => match self.files.remove(&file_name) {
-                Some(Progress::LoadingPathed(path)) => mv_file(&file_name, &path, download_dir),
-                Some(Progress::Loading(process)) => {
-                    self.files.insert(file_name, Progress::Finished(process));
+            (NewFileState::Waiting, EventMask::MOVED_TO) => {
+                match self.files.remove(&file_name) {
+                    Some(Progress::LoadingPathed(path)) => {
+                        mv_file(&file_name, &path, download_dir);
+                    }
+                    Some(Progress::Loading(process)) => {
+                        self.files.insert(file_name, Progress::Finished(process));
+                    }
+                    Some(Progress::Finished(..)) => panic!("Download of {file_name:?} finished twice"),
+                    None => {}
                 }
-                Some(Progress::Finished(..)) => panic!("Download of {file_name:?} finished twice"),
-                None => {}
             },
 
             (NewFileState::Waiting, EventMask::DELETE) => {
@@ -121,13 +125,17 @@ impl State {
                         part_name: part_name.clone()
                     };
                 },
-                _ => self.new_file = NewFileState::Waiting
+                _ => {
+                    self.new_file = NewFileState::Waiting;
+                }
             },
 
-            (NewFileState::EmptyFileCreated { empty_name, part_name }, EventMask::MOVED_FROM) => if file_name == *part_name {
-                let child = select_path_dialog(&download_dir.join(&empty_name));
-                self.files.insert(empty_name.clone(), Progress::Loading(child));
-            },
+            (NewFileState::EmptyFileCreated { empty_name, part_name }, EventMask::MOVED_FROM) => {
+                if file_name == *part_name {
+                    let child = select_path_dialog(&download_dir.join(empty_name));
+                    self.files.insert(empty_name.clone(), Progress::Loading(child));
+                }
+            }
 
             (NewFileState::FirstPartCreated {..}, _) | (NewFileState::EmptyFileCreated {..}, _) => {
                 self.new_file = NewFileState::Waiting;
@@ -139,30 +147,39 @@ impl State {
 
 }
 
+// TODO check if to and from are equal
 fn mv_file(file_name: &OsStr, path: &PathBuf, download_dir: &Path) {
-    fn mv(from: PathBuf, to: &PathBuf) {
-        if let Err(err) = std::fs::copy(&from, to) {
-            println!("Error copying: {err}");
+    let from = download_dir.join(file_name);
+
+    let to = if path.is_dir() {
+        path.join(file_name)
+    } else {
+        path.to_path_buf()
+    };
+
+    match to.try_exists() {
+        Ok(true) => {
+            println!("{to:?} already exists.");
             return;
         }
-        if let Err(err) = std::fs::remove_file(from) {
-            println!("Error removing: {err}");
+        Err(error) => {
+            println!("We don't know if {to:?} exists: {error}");
+            return;
         }
+        _ => {}
     }
 
-    match (path.is_dir(), path.try_exists()) {
-        (true, _) => {
-            mv(download_dir.join(file_name), &path.join(file_name));
-        },
-        (false, Ok(false)) => {
-            mv(download_dir.join(file_name), path);
-        }
-        (false, Ok(true)) => {
-            println!("{path:?} already exists.");
-        },
-        (false, Err(error)) => {
-            println!("We don't know if {path:?} exists: {error}");
-        }
+    // if to.canonicalize().unwrap() == from.canonicalize().unwrap() {
+    //     println!("Move src and dest are both {to:?}");
+    //     return;
+    // }
+
+    if let Err(err) = std::fs::copy(&from, to) {
+        println!("Error copying: {err}");
+        return;
+    }
+    if let Err(err) = std::fs::remove_file(from) {
+        println!("Error removing: {err}");
     }
 }
 
@@ -170,6 +187,7 @@ fn select_path_dialog(file_path: &Path) -> Child {
     // Skip first arg and use rest as command to execute
     let mut args = std::env::args();
     args.next();
+
     Command::new::<String>(args.next().expect("Too few arguments!"))
         .args(args.collect::<Vec<String>>())
         .arg(file_path)
