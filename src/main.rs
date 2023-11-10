@@ -14,7 +14,7 @@ fn main() -> Result<(), std::io::Error> {
         WatchMask::CREATE | WatchMask::DELETE | WatchMask::MOVED_FROM | WatchMask::MOVED_TO
     )?;
 
-    println!("Watching {0:#?} for activity...", &download_dir);
+    println!("Watching {0:#?}...", &download_dir);
 
     let mut state = State::new();
     let mut buffer = [0u8; 4096];

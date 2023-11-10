@@ -150,12 +150,7 @@ impl State {
 // TODO check if to and from are equal
 fn mv_file(file_name: &OsStr, path: &PathBuf, download_dir: &Path) {
     let from = download_dir.join(file_name);
-
-    let to = if path.is_dir() {
-        path.join(file_name)
-    } else {
-        path.to_path_buf()
-    };
+    let to = path.to_path_buf();
 
     match to.try_exists() {
         Ok(true) => {
@@ -169,6 +164,7 @@ fn mv_file(file_name: &OsStr, path: &PathBuf, download_dir: &Path) {
         _ => {}
     }
 
+    // TODO
     // if to.canonicalize().unwrap() == from.canonicalize().unwrap() {
     //     println!("Move src and dest are both {to:?}");
     //     return;
